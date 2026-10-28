@@ -1,0 +1,31 @@
+---
+- name: Install web and PHP packages
+  ansible.builtin.dnf:
+    name: "{{ phpinfo_packages }}"
+    state: present
+
+- name: Deploy info.php
+  ansible.builtin.template:
+    src: info.php.j2
+    dest: /var/www/html/info.php
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start and enable services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - php-fpm
+    - httpd
+    - firewalld
+
+# Requires the ansible.posix collection.
+- name: Allow HTTP through the firewall
+  ansible.posix.firewalld:
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled

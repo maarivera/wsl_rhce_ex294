@@ -1,0 +1,36 @@
+---
+- name: Install httpd and firewalld
+  ansible.builtin.dnf:
+    name:
+      - httpd
+      - firewalld
+    state: present
+
+- name: Start and enable httpd and firewalld
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - httpd
+    - firewalld
+
+- name: Allow HTTP
+  ansible.posix.firewalld:
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Set the ServerName
+  ansible.builtin.template:
+    src: servername.conf.j2
+    dest: /etc/httpd/conf.d/servername.conf
+    mode: "0644"
+  notify: Restart httpd
+
+- name: Deploy the index page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /var/www/html/index.html
+    mode: "0644"

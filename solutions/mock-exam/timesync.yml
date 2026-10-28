@@ -1,0 +1,9 @@
+---
+- name: Configure time synchronization with the RHEL system role
+  hosts: all
+  vars:
+    timesync_ntp_servers:
+      - hostname: pool.ntp.org
+        iburst: true
+  roles:
+    - redhat.rhel_system_roles.timesync

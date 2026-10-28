@@ -1,0 +1,7 @@
+# Lab administration inventory (graders and reset playbooks).
+[managed]
+managed-node1 ansible_host=10.10.10.11
+managed-node2 ansible_host=10.10.10.12
+
+[control]
+localhost ansible_connection=local

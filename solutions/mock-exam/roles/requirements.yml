@@ -1,0 +1,5 @@
+---
+- src: http://materials.lab.example.com/materials/roles/phpinfo.tar.gz
+  name: phpinfo
+- src: http://materials.lab.example.com/materials/roles/motd.tar.gz
+  name: motd

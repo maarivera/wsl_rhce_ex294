@@ -1,0 +1,32 @@
+---
+- name: Logical volume data in VG research
+  hosts: all
+  tasks:
+    - name: Report a missing volume group
+      ansible.builtin.debug:
+        msg: Volume group does not exist
+      when: ansible_facts['lvm']['vgs']['research'] is not defined
+
+    - name: Create and format the logical volume
+      when: ansible_facts['lvm']['vgs']['research'] is defined
+      block:
+        - name: Create a 1500 MiB logical volume
+          community.general.lvol:
+            vg: research
+            lv: data
+            size: 1500m
+      rescue:
+        - name: Report the size problem
+          ansible.builtin.debug:
+            msg: Could not create logical volume of that size
+
+        - name: Create an 800 MiB logical volume instead
+          community.general.lvol:
+            vg: research
+            lv: data
+            size: 800m
+      always:
+        - name: Format with ext4
+          community.general.filesystem:
+            dev: /dev/research/data
+            fstype: ext4

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# rhcelab - day-to-day helper for the WSL2 RHCE lab (run on control-node as ansible).
+set -euo pipefail
+
+LAB_HOME=${LAB_HOME:-/opt/rhcelab}
+MANAGED=(managed-node1 managed-node2)
+WSL_EXE=/mnt/c/Windows/System32/wsl.exe
+
+usage() {
+    cat <<'EOF'
+Usage: rhcelab COMMAND [ARGS]
+
+  status              show lab network and SSH reachability of every node
+  up                  start the managed nodes from here (uses WSL interop)
+  known-hosts         refresh ~/.ssh/known_hosts for all managed nodes
+  validate            check the lab environment itself (bash checks)
+  practice ID|LEVEL   check a practice task: B05, I12, R20, B, I, R or all
+  grade               grade the mock exam (bash grader, 300 points, pass 210)
+  grade-ansible       grade the mock exam with the Ansible grader
+  reset [OPTIONS]     reset managed nodes (see: rhcelab reset --help)
+  exam-start          back up the workspace, reset everything, remove repos
+EOF
+}
+
+node_up() { timeout 5 ssh -n -o BatchMode=yes -o ConnectTimeout=3 "ansible@$1" true &>/dev/null; }
+
+cmd_status() {
+    local n
+    ip -br addr show rhcebr0 2>/dev/null || echo "bridge rhcebr0 is missing (no lab node running?)"
+    for n in "${MANAGED[@]}"; do
+        if node_up "$n"; then printf '%-15s %s\n' "$n" "reachable over SSH"; else printf '%-15s %s\n' "$n" "NOT reachable"; fi
+    done
+}
+
+cmd_up() {
+    local n
+    [[ -x $WSL_EXE ]] || { echo "WSL interop not available; run windows\\Start-RhceLab.ps1 instead" >&2; exit 1; }
+    for n in "${MANAGED[@]}"; do
+        if node_up "$n"; then echo "$n already up"; continue; fi
+        echo "starting $n"
+        # A long-lived process keeps the distribution (and its systemd) running.
+        setsid nohup "$WSL_EXE" -d "$n" -u root --exec /bin/sleep infinity >/dev/null 2>&1 &
+    done
+    for n in "${MANAGED[@]}"; do
+        for _ in $(seq 1 60); do node_up "$n" && break; sleep 2; done
+    done
+    cmd_status
+}
+
+cmd_known_hosts() {
+    local n
+    mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    for n in "${MANAGED[@]}"; do
+        ssh-keygen -R "$n" &>/dev/null || true
+        ssh-keygen -R "$n.lab.example.com" &>/dev/null || true
+        ssh-keyscan -T 5 -t ed25519,rsa,ecdsa "$n" "$n.lab.example.com" 2>/dev/null >>~/.ssh/known_hosts
+    done
+    echo "known_hosts refreshed"
+}
+
+cmd=${1:-help}
+shift || true
+case $cmd in
+    status) cmd_status ;;
+    up) cmd_up ;;
+    known-hosts) cmd_known_hosts ;;
+    validate) exec "$LAB_HOME/validate/validate-lab.sh" "$@" ;;
+    practice) exec "$LAB_HOME/validate/check-practice.sh" "$@" ;;
+    grade) exec "$LAB_HOME/validate/validate-exam.sh" "$@" ;;
+    grade-ansible)
+        cd "$LAB_HOME"
+        ANSIBLE_CONFIG=$LAB_HOME/lab/ansible.cfg exec ansible-playbook validate/run-checks.yml -e suite=exam "$@" ;;
+    reset) exec "$LAB_HOME/reset/reset-lab.sh" "$@" ;;
+    exam-start) exec "$LAB_HOME/reset/reset-lab.sh" --workspace --exam ;;
+    help | -h | --help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac

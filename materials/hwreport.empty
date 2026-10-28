@@ -1,0 +1,6 @@
+# Hardware report
+HOST=inventory hostname
+MEMORY=total memory in mb
+BIOS=bios version
+DISK_SIZE_VDA=disk size
+DISK_SIZE_VDB=disk size

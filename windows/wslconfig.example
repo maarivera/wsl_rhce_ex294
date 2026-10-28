@@ -1,0 +1,11 @@
+# %USERPROFILE%\.wslconfig - settings for the WSL2 VM shared by ALL distributions.
+# Merge these into your existing file (do not overwrite other settings), then run
+#     wsl --shutdown
+# for them to take effect.
+[wsl2]
+# Three Rocky nodes with systemd, httpd, MariaDB and dnf transactions need room.
+memory=6GB
+processors=4
+swap=4GB
+# The lab bridge + NAT design targets the default NAT networking mode.
+networkingMode=nat

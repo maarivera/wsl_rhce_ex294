@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# rhcelab-reset - return a managed node to the baseline captured by rhcelab-baseline.
+#
+# It runs locally as root, so it also works when Ansible can no longer reach the
+# node (broken sshd_config, firewall lock-out, ...):
+#     wsl -d managed-node1 -u root -- rhcelab-reset all
+#
+# Usage: rhcelab-reset [--exam] COMPONENT...
+#   repos     restore /etc/yum.repos.d and dnf.conf
+#   services  disable services that were not enabled in the baseline
+#   storage   unmount, remove VGs/partitions on the lab disks, recreate them
+#   packages  remove extra packages and groups, reinstall missing baseline packages
+#   users     delete users, groups and home directories that are not in the baseline
+#   cron      remove crontabs, cron.d entries and at jobs
+#   files     restore tracked config files and delete common exam artifacts
+#   firewall  restore /etc/firewalld and reload firewalld
+#   selinux   restore /etc/selinux/config, drop local fcontext/boolean/port changes
+#   all       everything above, in a safe order
+#   --exam    afterwards, remove all repo files (the mock exam starts without repos)
+set -uo pipefail
+
+BASE=/var/lib/rhcelab/baseline
+LOG=/var/log/rhcelab-reset.log
+RESET_PATHS_CONF=/etc/rhcelab/reset-paths.conf
+ORDER=(repos services storage packages users cron files firewall selinux)
+
+# shellcheck source=/dev/null
+. /etc/rhcelab/lab.conf
+
+[[ $EUID -eq 0 ]] || { echo "rhcelab-reset: must run as root" >&2; exit 1; }
+[[ $LAB_ROLE == managed ]] || { echo "rhcelab-reset: only managed nodes are reset" >&2; exit 1; }
+[[ -f $BASE/packages.txt ]] || { echo "rhcelab-reset: no baseline in $BASE (run rhcelab-baseline capture)" >&2; exit 1; }
+
+exec > >(tee -a "$LOG") 2>&1
+FAILED=0
+step() { printf '\n==> [%s] %s\n' "$LAB_NODE" "$*"; }
+warn() { echo "WARNING: $*"; FAILED=1; }
+# Lines in $2 that are not in $1 (both sorted).
+extras() { comm -13 "$1" <(sort -u "$2"); }
+
+restore_paths() {
+    # Restore tracked paths matching the given prefixes from the baseline tarball and
+    # delete tracked paths that did not exist at baseline time.
+    local prefix p
+    for prefix in "$@"; do
+        while read -r p; do
+            [[ $p == "$prefix"* ]] || continue
+            rm -rf "/${p:?}"
+            tar -C / --xattrs --acls -xpf "$BASE/files.tar" "$p"
+        done <"$BASE/present-paths.txt"
+        while read -r p; do
+            [[ $p == "$prefix"* ]] && rm -rf "/${p:?}"
+        done <"$BASE/absent-paths.txt"
+    done
+}
+
+reset_repos() {
+    step "repositories"
+    restore_paths etc/yum.repos.d etc/dnf/dnf.conf
+    rm -rf /var/lib/rhcelab/stashed-repos
+    dnf -q clean all
+}
+
+reset_services() {
+    step "services (disable non-baseline units)"
+    local unit
+    while read -r unit; do
+        [[ $unit == *@* ]] && continue
+        echo "disable --now $unit"
+        systemctl disable --now "$unit" &>/dev/null || true
+    done < <(extras "$BASE/units.txt" <(systemctl list-unit-files --state=enabled --no-legend --type=service,socket,timer | awk '{print $1}'))
+}
+
+lab_disk_devs() {
+    local spec img dev
+    for spec in ${LAB_DISKS:-}; do
+        img="/var/lib/rhcelab/disks/${LAB_NODE}-${spec%%:*}.img"
+        dev=$(losetup --list --noheadings --output NAME --associated "$img" 2>/dev/null | head -n1)
+        [[ -n $dev ]] && echo "$dev"
+    done
+}
+
+release_dev() {
+    # Unmount and swapoff everything that lives on block device $1.
+    local target
+    swapoff "$1" 2>/dev/null || true
+    while read -r target; do
+        [[ -n $target ]] && umount -l "$target" 2>/dev/null
+    done < <(findmnt -rn -o TARGET -S "$1" 2>/dev/null | sort -r)
+}
+
+reset_storage() {
+    step "storage"
+    local dev part vg lv
+    while read -r dev; do
+        # Volume groups on the disk or on any of its partitions.
+        for vg in $(pvs --noheadings -o pv_name,vg_name 2>/dev/null | awk -v d="$dev" '($1 == d || index($1, d "p") == 1) && $2 != "" {print $2}' | sort -u); do
+            for lv in $(lvs --noheadings -o lv_path "$vg" 2>/dev/null); do release_dev "$lv"; done
+            vgchange -q -an "$vg" &>/dev/null
+            vgremove -q -ff -y "$vg" &>/dev/null || warn "could not remove VG $vg"
+        done
+        for part in "$dev"p*; do
+            [[ -b $part ]] || continue
+            release_dev "$part"
+            pvremove -q -ff -y "$part" &>/dev/null
+            wipefs -qaf "$part" &>/dev/null
+        done
+        release_dev "$dev"
+        pvremove -q -ff -y "$dev" &>/dev/null
+        wipefs -qaf "$dev" &>/dev/null
+        losetup -d "$dev" || warn "could not detach $dev"
+    done < <(lab_disk_devs)
+    # Swap files created by exercises (WSL swap is VM-wide, so only touch local files).
+    awk 'NR > 1 && $2 == "file" {print $1}' /proc/swaps | while read -r part; do
+        [[ -f $part ]] && swapoff "$part" 2>/dev/null
+    done
+    rm -f /var/lib/rhcelab/disks/"${LAB_NODE}"-*.img /var/lib/rhcelab/storage.seeded /etc/lvm/devices/system.devices
+    restore_paths etc/fstab etc/lvm
+    systemctl daemon-reload
+    /usr/local/sbin/rhcelab-storage up || warn "rhcelab-storage up failed"
+}
+
+reset_packages() {
+    step "packages"
+    local grp extra missing
+    for grp in $(extras "$BASE/groups-dnf.txt" <(dnf -q group list --installed --ids 2>/dev/null | sed -n 's/.*(\([^)]*\))[[:space:]]*$/\1/p')); do
+        echo "group remove $grp"
+        dnf -y -q group remove "$grp" || warn "group remove $grp failed"
+    done
+    # Remove only user-installed extras; their dependencies go with autoremove, while
+    # dependencies that newer baseline packages need (after a `dnf update`) stay.
+    extra=$(comm -12 <(extras "$BASE/packages.txt" <(rpm -qa --qf '%{NAME}\n' | grep -vx gpg-pubkey)) \
+        <(dnf -q repoquery --userinstalled --qf '%{name}' 2>/dev/null | sort -u))
+    if [[ -n $extra ]]; then
+        echo "remove: $(echo "$extra" | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        dnf -y -q remove $extra || warn "package removal failed"
+    fi
+    dnf -y -q autoremove || true
+    missing=$(comm -23 "$BASE/packages.txt" <(rpm -qa --qf '%{NAME}\n' | sort -u))
+    if [[ -n $missing ]]; then
+        echo "reinstall: $(echo "$missing" | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        dnf -y -q install $missing || warn "could not reinstall baseline packages (are repositories configured?)"
+    fi
+}
+
+reset_users() {
+    step "users and groups"
+    local u g d
+    for u in $(extras "$BASE/users.txt" <(getent passwd | cut -d: -f1)); do
+        echo "userdel $u"
+        pkill -KILL -u "$u" 2>/dev/null || true
+        userdel -r -f "$u" 2>/dev/null || userdel -f "$u" || warn "userdel $u failed"
+    done
+    for g in $(extras "$BASE/groups.txt" <(getent group | cut -d: -f1)); do
+        echo "groupdel $g"
+        groupdel "$g" || warn "groupdel $g failed"
+    done
+    # Home directories created by hand for users that no longer exist.
+    for d in /home/*; do
+        [[ -d $d ]] || continue
+        grep -qxF "$d" "$BASE/homes.txt" || { echo "rm -rf $d"; rm -rf "${d:?}"; }
+    done
+}
+
+reset_cron() {
+    step "scheduled jobs"
+    restore_paths var/spool/cron etc/crontab etc/cron.d etc/cron.allow etc/cron.deny
+    if command -v atq >/dev/null; then
+        atq | awk '{print $1}' | xargs -r atrm
+    fi
+}
+
+reset_files() {
+    step "configuration files and exam artifacts"
+    restore_paths etc/hosts etc/motd etc/issue etc/environment etc/sudoers etc/sysctl etc/profile.d \
+        etc/security etc/systemd/system etc/ssh etc/chrony.conf etc/sysconfig/chronyd etc/login.defs \
+        etc/default/useradd home/ansible/.ssh
+    # Custom facts written by exercises (keep the lab's own fact file).
+    find /etc/ansible/facts.d -mindepth 1 ! -name rhcelab.fact -exec rm -rf {} + 2>/dev/null
+    local pattern path
+    if [[ -r $RESET_PATHS_CONF ]]; then
+        while read -r pattern; do
+            [[ -z $pattern || $pattern == \#* ]] && continue
+            for path in $pattern; do
+                [[ -e $path || -L $path ]] && { echo "rm -rf $path"; rm -rf "${path:?}"; }
+            done
+        done <"$RESET_PATHS_CONF"
+    fi
+    systemctl daemon-reload
+    sysctl -q --system >/dev/null 2>&1 || true
+    systemctl try-reload-or-restart sshd || warn "sshd reload failed"
+}
+
+reset_firewall() {
+    step "firewalld"
+    restore_paths etc/firewalld
+    rpm -q firewalld &>/dev/null || dnf -y -q install firewalld || warn "firewalld not installed"
+    systemctl enable firewalld &>/dev/null
+    if systemctl is-active -q firewalld; then
+        firewall-cmd -q --complete-reload || systemctl restart firewalld
+    else
+        systemctl start firewalld || warn "firewalld did not start"
+    fi
+}
+
+reset_selinux() {
+    step "SELinux"
+    restore_paths etc/selinux/config
+    if command -v semanage >/dev/null; then
+        # -D deletes all local customizations; the baseline has none.
+        semanage fcontext -D 2>/dev/null || true
+        semanage boolean -D 2>/dev/null || true
+        semanage port -D 2>/dev/null || true
+    fi
+}
+
+restore_baseline_units() {
+    step "services (re-enable baseline units)"
+    local unit
+    systemctl daemon-reload
+    while read -r unit; do
+        [[ $unit == *@* ]] && continue
+        systemctl is-enabled -q "$unit" 2>/dev/null || systemctl enable "$unit" &>/dev/null || true
+    done <"$BASE/units.txt"
+    systemctl reset-failed
+    for unit in rhcelab-net sshd firewalld crond atd; do
+        systemctl is-active -q "$unit" || systemctl start "$unit" || warn "$unit did not start"
+    done
+}
+
+exam_mode() {
+    step "exam mode: removing repository files (configure them as part of the exam)"
+    mkdir -p /var/lib/rhcelab/stashed-repos
+    find /etc/yum.repos.d -name '*.repo' -exec mv -t /var/lib/rhcelab/stashed-repos {} +
+    dnf -q clean all
+}
+
+EXAM=0
+COMPONENTS=()
+for arg in "$@"; do
+    case $arg in
+        --exam) EXAM=1 ;;
+        all) COMPONENTS=("${ORDER[@]}") ;;
+        repos | services | storage | packages | users | cron | files | firewall | selinux) COMPONENTS+=("$arg") ;;
+        -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+        *) echo "rhcelab-reset: unknown component '$arg'" >&2; exit 2 ;;
+    esac
+done
+[[ ${#COMPONENTS[@]} -gt 0 || $EXAM -eq 1 ]] || { sed -n '2,24p' "$0"; exit 2; }
+
+echo "==== rhcelab-reset $(date -Is) on $LAB_NODE: ${COMPONENTS[*]} $([[ $EXAM -eq 1 ]] && echo --exam)"
+# Run the requested components in the safe order, whatever order they were given in.
+for c in "${ORDER[@]}"; do
+    [[ " ${COMPONENTS[*]} " == *" $c "* ]] && "reset_$c"
+done
+[[ ${#COMPONENTS[@]} -gt 0 ]] && restore_baseline_units
+[[ $EXAM -eq 1 ]] && exam_mode
+
+if [[ $FAILED -eq 0 ]]; then
+    echo "==== $LAB_NODE reset complete"
+else
+    echo "==== $LAB_NODE reset finished WITH WARNINGS (see $LOG)"
+fi
+exit "$FAILED"

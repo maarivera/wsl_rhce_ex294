@@ -1,0 +1,107 @@
+# Practice task checks (60 tasks). Run: rhcelab practice B05 | I | R | all
+# Columns (TAB-separated): ID  POINTS  TARGET  DESCRIPTION  COMMAND
+# Never use Jinja delimiters in COMMAND (the Ansible engine templates it).
+# Beginner
+B01	1	control	inventory groups dev/prod/webservers/dbservers/managed	ansible-inventory --list 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); ok = d["dev"]["hosts"] == ["managed-node1"] and d["prod"]["hosts"] == ["managed-node2"] and d["webservers"]["hosts"] == ["managed-node1"] and d["dbservers"]["hosts"] == ["managed-node2"] and set(d["managed"]["children"]) == {"dev", "prod"}; sys.exit(0 if ok else 1)'
+B01	1	control	ansible.cfg sets remote_user ansible and become	ansible-config dump --only-changed 2>/dev/null | grep -Eq '^DEFAULT_REMOTE_USER\(.*\) = ansible$' && ansible-config dump --only-changed 2>/dev/null | grep -Eq '^DEFAULT_BECOME\(.*\) = True$'
+B02	1	control	adhoc-ping.sh uses the ping module and succeeds	test -x adhoc-ping.sh && grep -Eq -- '-m +(ansible\.builtin\.)?ping' adhoc-ping.sh && ./adhoc-ping.sh
+B03	1	control	adhoc-uptime.sh uses the command module	test -x adhoc-uptime.sh && grep -Eq -- '-m +(ansible\.builtin\.)?command' adhoc-uptime.sh && ./adhoc-uptime.sh | grep -q 'load average'
+B04	1	managed-node1	/etc/motd is exactly 'Managed by Ansible'	test "$(cat /etc/motd)" = 'Managed by Ansible'
+B04	1	managed-node2	/etc/motd is exactly 'Managed by Ansible'	test "$(cat /etc/motd)" = 'Managed by Ansible'
+B05	1	managed-node1	tree installed on dev	rpm -q tree >/dev/null
+B05	1	managed-node2	tree not installed on prod	! rpm -q tree >/dev/null
+B06	1	managed-node1	/srv/ansible-lab and README	test "$(stat -c '%U %a' /srv/ansible-lab)" = 'root 755' && grep -qx 'Practice lab file' /srv/ansible-lab/README
+B06	1	managed-node2	/srv/ansible-lab and README	test "$(stat -c '%U %a' /srv/ansible-lab)" = 'root 755' && grep -qx 'Practice lab file' /srv/ansible-lab/README
+B07	1	managed-node1	git and tmux installed	rpm -q git tmux >/dev/null
+B07	1	managed-node2	git and tmux installed	rpm -q git tmux >/dev/null
+B08	1	managed-node1	httpd enabled and running on webservers	systemctl is-active -q httpd && systemctl is-enabled -q httpd
+B09	1	managed-node1	user alice uid 2001, comment, bash	test "$(getent passwd alice | cut -d: -f3,5,7)" = '2001:Alice Lab:/bin/bash'
+B09	1	managed-node2	user alice uid 2001, comment, bash	test "$(getent passwd alice | cut -d: -f3,5,7)" = '2001:Alice Lab:/bin/bash'
+B10	1	managed-node1	group developers gid 3000 with member bob	test "$(getent group developers | cut -d: -f3)" = 3000 && id -nG bob | grep -qw developers
+B10	1	managed-node2	group developers gid 3000 with member bob	test "$(getent group developers | cut -d: -f3)" = 3000 && id -nG bob | grep -qw developers
+B11	1	managed-node1	/etc/lab-owner contains the variable value	test "$(cat /etc/lab-owner)" = rhce
+B11	1	managed-node2	/etc/lab-owner contains the variable value	test "$(cat /etc/lab-owner)" = rhce
+B12	1	managed-node1	/etc/node-facts.txt built from facts	grep -qx "hostname=$(hostname -s)" /etc/node-facts.txt && grep -qx 'distribution=Rocky' /etc/node-facts.txt && grep -Eqx 'version=9\.[0-9]+' /etc/node-facts.txt
+B12	1	managed-node2	/etc/node-facts.txt built from facts	grep -qx "hostname=$(hostname -s)" /etc/node-facts.txt && grep -qx 'distribution=Rocky' /etc/node-facts.txt && grep -Eqx 'version=9\.[0-9]+' /etc/node-facts.txt
+B13	1	managed-node1	line present in /etc/profile.d/lab.sh	grep -qx 'export LAB_ENV=practice' /etc/profile.d/lab.sh
+B13	1	managed-node2	line present in /etc/profile.d/lab.sh	grep -qx 'export LAB_ENV=practice' /etc/profile.d/lab.sh
+B14	1	managed-node1	/etc/issue.net copied with mode 0644	grep -q 'Authorized access only' /etc/issue.net && test "$(stat -c %a /etc/issue.net)" = 644
+B14	1	managed-node2	/etc/issue.net copied with mode 0644	grep -q 'Authorized access only' /etc/issue.net && test "$(stat -c %a /etc/issue.net)" = 644
+B15	1	managed-node1	http allowed now and permanently	firewall-cmd -q --query-service=http && firewall-cmd -q --permanent --query-service=http
+B16	1	managed-node1	root cron job 'cleanup tmp'	crontab -l -u root | grep -qx '#Ansible: cleanup tmp' && crontab -l -u root | grep -Fqx '30 2 * * * find /tmp -mtime +7 -delete'
+B16	1	managed-node2	root cron job 'cleanup tmp'	crontab -l -u root | grep -qx '#Ansible: cleanup tmp' && crontab -l -u root | grep -Fqx '30 2 * * * find /tmp -mtime +7 -delete'
+B17	1	control	collections installed in the workspace and configured	test -f collections/ansible_collections/ansible/posix/MANIFEST.json && test -f collections/ansible_collections/community/general/MANIFEST.json && ansible-config dump --only-changed 2>/dev/null | grep -E '^COLLECTIONS_PATHS\(' | grep -q /home/ansible/ansible/collections
+B18	1	managed-node1	ServerName file deployed and httpd healthy	grep -qx 'ServerName managed-node1.lab.example.com' /etc/httpd/conf.d/servername.conf && httpd -t >/dev/null 2>&1 && systemctl is-active -q httpd
+B19	1	control	adhoc-facts.sh filters distribution facts	test -x adhoc-facts.sh && grep -q 'filter' adhoc-facts.sh && ./adhoc-facts.sh | grep -q '"ansible_distribution": "Rocky"'
+B20	1	control	b20-debug.yml prints hostnames and groups	grep -q group_names b20-debug.yml && ansible-playbook b20-debug.yml | grep -q 'managed-node1'
+# Intermediate
+I01	1	managed-node1	carol/dave/erin with uids 2101-2103	test "$(id -u carol)" = 2101 && test "$(id -u dave)" = 2102 && test "$(id -u erin)" = 2103
+I01	1	managed-node2	carol/dave/erin with uids 2101-2103	test "$(id -u carol)" = 2101 && test "$(id -u dave)" = 2102 && test "$(id -u erin)" = 2103
+I02	1	managed-node1	/srv/data 0750 and /srv/share 2775 group share	test "$(stat -c '%U:%G %a' /srv/data)" = 'root:root 750' && test "$(stat -c '%U:%G %a' /srv/share)" = 'root:share 2775'
+I02	1	managed-node2	/srv/data 0750 and /srv/share 2775 group share	test "$(stat -c '%U:%G %a' /srv/data)" = 'root:root 750' && test "$(stat -c '%U:%G %a' /srv/share)" = 'root:share 2775'
+I03	1	managed-node2	mariadb-server installed on dbservers	rpm -q mariadb-server >/dev/null
+I03	1	managed-node1	mariadb-server not installed elsewhere	! rpm -q mariadb-server >/dev/null
+I04	1	managed-node1	/root/httpd-status.txt matches reality	if rpm -q httpd >/dev/null; then e=installed; else e=missing; fi; test "$(cat /root/httpd-status.txt)" = "$e"
+I04	1	managed-node2	/root/httpd-status.txt matches reality	if rpm -q httpd >/dev/null; then e=installed; else e=missing; fi; test "$(cat /root/httpd-status.txt)" = "$e"
+I05	1	managed-node1	security.conf deployed, httpd running	grep -qx 'ServerTokens Prod' /etc/httpd/conf.d/security.conf && grep -qx 'ServerSignature Off' /etc/httpd/conf.d/security.conf && systemctl is-active -q httpd
+I05	1	control	i05-handlers.yml uses a handler	grep -q 'handlers:' i05-handlers.yml && grep -q 'notify' i05-handlers.yml
+I06	1	managed-node1	templated /etc/motd with FQDN and IP	grep -qx "Welcome to $(hostname -s).lab.example.com" /etc/motd && grep -qx "IP: $(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1)" /etc/motd
+I06	1	managed-node2	templated /etc/motd with FQDN and IP	grep -qx "Welcome to $(hostname -s).lab.example.com" /etc/motd && grep -qx "IP: $(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1)" /etc/motd
+I07	1	managed-node1	/etc/lab-hosts lists both nodes	grep -qx '10.10.10.11 managed-node1.lab.example.com managed-node1' /etc/lab-hosts && grep -qx '10.10.10.12 managed-node2.lab.example.com managed-node2' /etc/lab-hosts
+I07	1	managed-node2	/etc/lab-hosts only on dev	! test -e /etc/lab-hosts
+I08	1	control	vault/secrets.yml encrypted, .vault_pass is 0600	head -n1 vault/secrets.yml | grep -q '^\$ANSIBLE_VAULT' && test "$(stat -c %a .vault_pass)" = 600 && ansible-vault view --vault-password-file .vault_pass vault/secrets.yml | grep -Eq '^db_password: *["'\'']?Sup3rS3cret["'\'']?$'
+I09	1	managed-node2	dbadmin password comes from the vault	python3 -c 'import crypt,spwd,sys; h=spwd.getspnam(sys.argv[1]).sp_pwdp; sys.exit(0 if h.startswith("$6$") and crypt.crypt(sys.argv[2], h) == h else 1)' dbadmin Sup3rS3cret
+I09	1	managed-node1	dbadmin only on dbservers	! id dbadmin >/dev/null 2>&1
+I10	1	managed-node1	group_vars value for dev	test "$(cat /etc/environment-name)" = development
+I10	1	managed-node2	group_vars value for prod	test "$(cat /etc/environment-name)" = production
+I11	1	managed-node1	only the config tag ran	test -f /etc/lab-tags.conf && ! rpm -q zsh >/dev/null
+I11	1	managed-node2	only the config tag ran	test -f /etc/lab-tags.conf && ! rpm -q zsh >/dev/null
+I12	1	managed-node1	/root/ghost.txt reports absent	test "$(cat /root/ghost.txt)" = absent
+I12	1	managed-node2	/root/ghost.txt reports absent	test "$(cat /root/ghost.txt)" = absent
+I13	1	managed-node1	rescue and always sections ran	grep -q 'install failed' /root/rescue.log && test -f /root/always.log
+I13	1	managed-node2	rescue and always sections ran	grep -q 'install failed' /root/rescue.log && test -f /root/always.log
+I14	1	managed-node2	partition mounted on /mnt/part1 (xfs, persistent)	test "$(findmnt -n -o FSTYPE /mnt/part1)" = xfs && grep -Eq '[[:space:]]/mnt/part1[[:space:]]+xfs' /etc/fstab
+I15	1	managed-node2	vg_lab/lv_data 600 MiB ext4 on /mnt/data	test "$(lvs --noheadings --units m --nosuffix -o lv_size vg_lab/lv_data | tr -d ' ')" = 600.00 && test "$(findmnt -n -o FSTYPE /mnt/data)" = ext4 && grep -q '/mnt/data' /etc/fstab
+I16	1	managed-node1	lab-baseos and lab-appstream repositories	f=/etc/yum.repos.d/lab-baseos.repo; grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && dnf -q repolist --enabled | grep -q lab-baseos && dnf -q repolist --enabled | grep -q lab-appstream
+I16	1	managed-node2	lab-baseos and lab-appstream repositories	f=/etc/yum.repos.d/lab-baseos.repo; grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && dnf -q repolist --enabled | grep -q lab-baseos && dnf -q repolist --enabled | grep -q lab-appstream
+I17	1	managed-node1	/srv/web labelled httpd_sys_content_t persistently	test -f /srv/web/index.html && grep -E '^/srv/web' /etc/selinux/targeted/contexts/files/file_contexts.local | grep -q httpd_sys_content_t
+I18	1	managed-node1	/etc/cron.d/lab-backup weekday job	grep -Eq '^0 23 \* \* 1-5 root tar czf /root/etc-backup.tgz /etc$' /etc/cron.d/lab-backup
+I18	1	managed-node2	/etc/cron.d/lab-backup weekday job	grep -Eq '^0 23 \* \* 1-5 root tar czf /root/etc-backup.tgz /etc$' /etc/cron.d/lab-backup
+I19	1	control	inventory-report.txt written by delegation	grep -qx 'managed-node1 10.10.10.11' inventory-report.txt && grep -qx 'managed-node2 10.10.10.12' inventory-report.txt
+I20	1	control	role issue has tasks, defaults, template	test -f roles/issue/tasks/main.yml && test -f roles/issue/defaults/main.yml && ls roles/issue/templates/*.j2 >/dev/null 2>&1
+I20	1	managed-node1	role default used on dev	test "$(cat /etc/issue)" = 'Authorized users only'
+I20	1	managed-node2	override used on prod	test "$(cat /etc/issue)" = 'Production system'
+# RHCE level
+R01	1	control	role apache serves FQDN and IP	test -f roles/apache/handlers/main.yml && test "$(curl -fsS --max-time 10 http://managed-node1/)" = 'Welcome to managed-node1.lab.example.com on 10.10.10.11'
+R01	1	managed-node1	httpd enabled, http allowed permanently	systemctl is-enabled -q httpd && firewall-cmd -q --permanent --query-service=http
+R02	1	managed-node1	timesync role configured time.cloudflare.com	grep -Eq '^server +time\.cloudflare\.com.*iburst' /etc/chrony.conf && systemctl is-enabled -q chronyd
+R02	1	managed-node2	timesync role configured time.cloudflare.com	grep -Eq '^server +time\.cloudflare\.com.*iburst' /etc/chrony.conf && systemctl is-enabled -q chronyd
+R03	1	managed-node1	SELinux enforcing/targeted in config	grep -qx 'SELINUX=enforcing' /etc/selinux/config && grep -qx 'SELINUXTYPE=targeted' /etc/selinux/config
+R03	1	managed-node2	SELinux enforcing/targeted in config	grep -qx 'SELINUX=enforcing' /etc/selinux/config && grep -qx 'SELINUXTYPE=targeted' /etc/selinux/config
+R04	1	managed-node1	research/backup 600 MiB xfs on /mnt/backup	test "$(lvs --noheadings --units m --nosuffix -o lv_size research/backup | tr -d ' ')" = 600.00 && test "$(findmnt -n -o FSTYPE /mnt/backup)" = xfs && grep -q '/mnt/backup' /etc/fstab
+R04	1	managed-node2	nothing mounted on /mnt/backup without the VG	! findmnt /mnt/backup >/dev/null
+R05	1	managed-node1	/root/inventory.txt built from facts	f=/root/inventory.txt; grep -qx "hostname=$(hostname -s)" $f && grep -Eqx 'cpus=[0-9]+' $f && grep -Eqx 'memory_mb=[0-9]+' $f && grep -qx 'disk_vdb=NONE' $f && grep -qx "lab_disk=$(python3 -c 'import json; print(json.load(open("/etc/ansible/facts.d/rhcelab.fact"))["disk"])')" $f
+R05	1	managed-node2	/root/inventory.txt built from facts	f=/root/inventory.txt; grep -qx "hostname=$(hostname -s)" $f && grep -Eqx 'cpus=[0-9]+' $f && grep -Eqx 'memory_mb=[0-9]+' $f && grep -qx 'disk_vdb=NONE' $f && grep -qx "lab_disk=$(python3 -c 'import json; print(json.load(open("/etc/ansible/facts.d/rhcelab.fact"))["disk"])')" $f
+R06	1	managed-node1	developers in devteam with vaulted password	id -nG dev1 | grep -qw devteam && id -nG dev2 | grep -qw devteam && ! id ops1 >/dev/null 2>&1 && python3 -c 'import crypt,spwd,sys; h=spwd.getspnam(sys.argv[1]).sp_pwdp; sys.exit(0 if h.startswith("$6$") and crypt.crypt(sys.argv[2], h) == h else 1)' dev1 DevPass123
+R06	1	managed-node2	operators in opsteam with vaulted password	id -nG ops1 | grep -qw opsteam && ! id dev1 >/dev/null 2>&1 && python3 -c 'import crypt,spwd,sys; h=spwd.getspnam(sys.argv[1]).sp_pwdp; sys.exit(0 if h.startswith("$6$") and crypt.crypt(sys.argv[2], h) == h else 1)' ops1 OpsPass123
+R07	1	control	vault/api.yml uses vault id 'api' and the new password	head -n1 vault/api.yml | grep -qx '\$ANSIBLE_VAULT;1.2;AES256;api' && ansible-vault view --vault-id api@.vault_api_new vault/api.yml | grep -q api_token
+R08	1	control	requirements files installed collections and roles	test -f collections/requirements.yml && test -f collections/ansible_collections/community/general/MANIFEST.json && test -f roles/requirements.yml && test -f roles/motd/tasks/main.yml
+R09	1	managed-node1	motd role applied with a custom message	grep -q 'RHCE practice node' /etc/motd
+R09	1	managed-node2	motd role applied with a custom message	grep -q 'RHCE practice node' /etc/motd
+R10	1	managed-node1	role=web on webservers	test "$(cat /etc/node-role.conf)" = role=web
+R10	1	managed-node2	role=db on dbservers	test "$(cat /etc/node-role.conf)" = role=db
+R11	1	managed-node1	httpd also listens on 8080, firewall open	grep -qx 'Listen 8080' /etc/httpd/conf.d/port8080.conf && firewall-cmd -q --query-port=8080/tcp && firewall-cmd -q --permanent --query-port=8080/tcp
+R11	1	control	http://managed-node1:8080/ answers	curl -fsS -o /dev/null --max-time 10 http://managed-node1:8080/
+R12	1	managed-node1	sysctl settings persistent and live	f=/etc/sysctl.d/90-lab.conf; grep -Eq '^net\.ipv4\.conf\.all\.log_martians *= *1' $f && grep -Eq '^net\.ipv4\.tcp_syncookies *= *1' $f && grep -Eq '^net\.ipv4\.icmp_echo_ignore_broadcasts *= *1' $f && test "$(sysctl -n net.ipv4.conf.all.log_martians)" = 1
+R12	1	managed-node2	sysctl settings persistent and live	f=/etc/sysctl.d/90-lab.conf; grep -Eq '^net\.ipv4\.conf\.all\.log_martians *= *1' $f && grep -Eq '^net\.ipv4\.tcp_syncookies *= *1' $f && grep -Eq '^net\.ipv4\.icmp_echo_ignore_broadcasts *= *1' $f && test "$(sysctl -n net.ipv4.conf.all.log_martians)" = 1
+R13	1	managed-node1	preflight assertions passed	test "$(cat /root/preflight.txt)" = PASS
+R13	1	managed-node2	preflight assertions passed	test "$(cat /root/preflight.txt)" = PASS
+R14	1	control	fetched /etc/hosts and run_once summary	test -f backups/managed-node1/etc/hosts && test -f backups/managed-node2/etc/hosts && grep -q managed-node1 backups/summary.txt && grep -q managed-node2 backups/summary.txt
+R15	1	managed-node1	custom fact consumed	grep -q '^\[app\]' /etc/ansible/facts.d/app.fact && test "$(cat /etc/app-version)" = 1.0
+R15	1	managed-node2	custom fact consumed	grep -q '^\[app\]' /etc/ansible/facts.d/app.fact && test "$(cat /etc/app-version)" = 1.0
+R16	1	managed-node2	peer IP from hostvars	grep -qx '10.10.10.11 managed-node1' /etc/peers
+R17	1	managed-node1	archive downloaded, verified and extracted	test "$(cat /opt/app/VERSION)" = 1.0.0
+R18	1	managed-node2	MariaDB bound to the node IP, firewall open	systemctl is-active -q mariadb && ss -ltnH | awk '{print $4}' | grep -qx '10.10.10.12:3306' && firewall-cmd -q --query-service=mysql
+R19	1	managed-node1	backup user cron job and script	id backup >/dev/null && crontab -l -u backup | grep -Fq '*/15 8-18 * * 1-5 /usr/local/bin/backup.sh' && test "$(stat -c '%U %a' /usr/local/bin/backup.sh)" = 'backup 750'
+R19	1	managed-node2	backup user cron job and script	id backup >/dev/null && crontab -l -u backup | grep -Fq '*/15 8-18 * * 1-5 /usr/local/bin/backup.sh' && test "$(stat -c '%U %a' /usr/local/bin/backup.sh)" = 'backup 750'
+R20	1	control	site.yml is idempotent (second run changes nothing)	test -f site.yml && out=$(ansible-playbook site.yml 2>&1) && test "$(echo "$out" | grep -E '^managed-node[12] +:' | grep -c 'changed=0 .*failed=0')" = 2

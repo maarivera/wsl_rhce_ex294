@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# rhcelab-authorize-key - install the control node's public key for the automation
+# user. Called out-of-band (wsl.exe -u root) because password SSH logins are disabled.
+#
+# Usage: rhcelab-authorize-key "ssh-ed25519 AAAA... ansible@control-node" [user]
+set -euo pipefail
+key=${1:?public key required}
+user=${2:-ansible}
+key=${key%$'\r'}
+[[ $key =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+)\ [A-Za-z0-9+/=]+( .*)?$ ]] || { echo "not an SSH public key" >&2; exit 1; }
+home=$(getent passwd "$user" | cut -d: -f6)
+install -d -m 0700 -o "$user" -g "$user" "$home/.ssh"
+touch "$home/.ssh/authorized_keys"
+grep -qxF "$key" "$home/.ssh/authorized_keys" || printf '%s\n' "$key" >>"$home/.ssh/authorized_keys"
+chown "$user:$user" "$home/.ssh/authorized_keys"
+chmod 0600 "$home/.ssh/authorized_keys"
+echo "authorized key for $user on $(hostname)"

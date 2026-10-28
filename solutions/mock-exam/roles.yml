@@ -1,0 +1,11 @@
+---
+- name: PHP page on the web servers
+  hosts: webservers
+  roles:
+    - phpinfo
+
+- name: Message of the day everywhere
+  hosts: all
+  roles:
+    - role: motd
+      motd_message: "Managed by Ansible - EX294 lab"

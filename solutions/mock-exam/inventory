@@ -1,0 +1,8 @@
+[dev]
+managed-node1
+
+[prod]
+managed-node2
+
+[webservers:children]
+prod

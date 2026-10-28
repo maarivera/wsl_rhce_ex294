@@ -1,0 +1,17 @@
+[Unit]
+Description=RHCE lab network (bridge, NAT, per-node network namespace)
+Documentation=file:///usr/local/sbin/rhcelab-net
+ConditionPathExists=/etc/rhcelab/lab.conf
+DefaultDependencies=no
+After=systemd-sysctl.service systemd-modules-load.service
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rhcelab-net up
+
+[Install]
+WantedBy=multi-user.target

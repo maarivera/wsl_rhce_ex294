@@ -1,0 +1,7 @@
+---
+# Encrypted on the materials server with the vault password: insecure8sure
+salaries:
+  bob: 72000
+  sally: 98000
+  fred: 91000
+  alice: 75000

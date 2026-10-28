@@ -1,0 +1,114 @@
+# Mock exam grader - 300 points, pass mark 210 (70%)
+# Columns (TAB-separated): ID  POINTS  TARGET  DESCRIPTION  COMMAND
+# TARGET 'control' runs as ansible in /home/ansible/ansible; managed-nodeN runs as root over SSH.
+# A check passes when COMMAND exits 0. Never use Jinja delimiters in COMMAND (the Ansible engine templates it).
+# T01 Install and configure Ansible (20)
+T01	2	control	ansible.cfg and inventory exist in /home/ansible/ansible	test -f ansible.cfg && test -f inventory
+T01	3	control	groups dev=managed-node1, prod=managed-node2	ansible-inventory --list 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["dev"]["hosts"] == ["managed-node1"] and d["prod"]["hosts"] == ["managed-node2"] else 1)'
+T01	3	control	group webservers has child group prod	ansible-inventory --list 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "prod" in d["webservers"].get("children", []) else 1)'
+T01	2	control	remote_user = ansible	ansible-config dump --only-changed 2>/dev/null | grep -Eq '^DEFAULT_REMOTE_USER\(.*\) = ansible$'
+T01	3	control	roles_path includes /home/ansible/ansible/roles	ansible-config dump --only-changed 2>/dev/null | grep -E '^DEFAULT_ROLES_PATH\(' | grep -q '/home/ansible/ansible/roles'
+T01	2	control	collections_path includes /home/ansible/ansible/mycollections	ansible-config dump --only-changed 2>/dev/null | grep -E '^COLLECTIONS_PATHS\(' | grep -q '/home/ansible/ansible/mycollections'
+T01	2	control	privilege escalation enabled	ansible-config dump --only-changed 2>/dev/null | grep -Eq '^DEFAULT_BECOME\(.*\) = True$'
+T01	3	control	ansible all -m ping succeeds	ansible all -m ansible.builtin.ping -o
+# T02 Yum repositories with an ad-hoc script (15)
+T02	3	control	adhoc.sh is executable and uses yum_repository	test -x adhoc.sh && grep -q yum_repository adhoc.sh
+T02	2	managed-node1	EX294_BASE repo file correct	f=/etc/yum.repos.d/EX294_BASE.repo; grep -Eq '^name *= *EX294 base software$' $f && grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && grep -Eq '^gpgkey *= *https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9$' $f && grep -Eq '^enabled *= *1' $f
+T02	2	managed-node2	EX294_BASE repo file correct	f=/etc/yum.repos.d/EX294_BASE.repo; grep -Eq '^name *= *EX294 base software$' $f && grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && grep -Eq '^gpgkey *= *https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9$' $f && grep -Eq '^enabled *= *1' $f
+T02	2	managed-node1	EX294_STREAM repo file correct	f=/etc/yum.repos.d/EX294_STREAM.repo; grep -Eq '^name *= *EX294 stream software$' $f && grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/AppStream/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && grep -Eq '^gpgkey *= *https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9$' $f && grep -Eq '^enabled *= *1' $f
+T02	2	managed-node2	EX294_STREAM repo file correct	f=/etc/yum.repos.d/EX294_STREAM.repo; grep -Eq '^name *= *EX294 stream software$' $f && grep -Eq '^baseurl *= *http://dl.rockylinux.org/pub/rocky/9/AppStream/x86_64/os/?$' $f && grep -Eq '^gpgcheck *= *1' $f && grep -Eq '^gpgkey *= *https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9$' $f && grep -Eq '^enabled *= *1' $f
+T02	2	managed-node1	both repos enabled in dnf	dnf -q repolist --enabled | grep -q EX294_BASE && dnf -q repolist --enabled | grep -q EX294_STREAM
+T02	2	managed-node2	both repos enabled in dnf	dnf -q repolist --enabled | grep -q EX294_BASE && dnf -q repolist --enabled | grep -q EX294_STREAM
+# T03 Install collections (10)
+T03	5	control	ansible.posix in mycollections	test -f mycollections/ansible_collections/ansible/posix/MANIFEST.json
+T03	5	control	community.general in mycollections	test -f mycollections/ansible_collections/community/general/MANIFEST.json
+# T04 Packages (20)
+T04	2	control	packages.yml exists	test -f packages.yml
+T04	3	managed-node1	php and mariadb installed	rpm -q php mariadb >/dev/null
+T04	3	managed-node2	php and mariadb installed	rpm -q php mariadb >/dev/null
+T04	4	managed-node1	RPM Development Tools group installed on dev	dnf -q group list --installed 2>/dev/null | grep -qi 'RPM Development Tools'
+T04	3	managed-node2	RPM Development Tools group NOT installed on prod	! dnf -q group list --installed 2>/dev/null | grep -qi 'RPM Development Tools'
+T04	5	managed-node1	all packages up to date on dev	dnf -q check-update >/dev/null 2>&1
+# T05 RHEL system role: timesync (15)
+T05	3	control	timesync.yml uses the timesync system role	grep -Eq 'rhel[-_]system[-_]roles\.timesync' timesync.yml
+T05	4	managed-node1	chrony uses pool.ntp.org with iburst	grep -Eq '^(server|pool) +pool\.ntp\.org.*iburst' /etc/chrony.conf
+T05	4	managed-node2	chrony uses pool.ntp.org with iburst	grep -Eq '^(server|pool) +pool\.ntp\.org.*iburst' /etc/chrony.conf
+T05	2	managed-node1	chronyd enabled	systemctl is-enabled -q chronyd
+T05	2	managed-node2	chronyd enabled	systemctl is-enabled -q chronyd
+# T06 Roles from a requirements file (15)
+T06	3	control	roles/requirements.yml lists phpinfo and motd	grep -q phpinfo roles/requirements.yml && grep -q motd roles/requirements.yml
+T06	6	control	role phpinfo installed in roles/	test -f roles/phpinfo/tasks/main.yml
+T06	6	control	role motd installed in roles/	test -f roles/motd/tasks/main.yml
+# T07 Use the installed roles (15)
+T07	2	control	roles.yml exists	test -f roles.yml
+T07	7	control	http://managed-node2/info.php is rendered by PHP	out=$(curl -fsS --max-time 10 http://managed-node2/info.php) && echo "$out" | grep -q 'Hello PHP World from managed-node2.lab.example.com' && ! echo "$out" | grep -q '<?php'
+T07	3	managed-node1	motd message deployed	grep -q 'Managed by Ansible - EX294 lab' /etc/motd
+T07	3	managed-node2	motd message deployed	grep -q 'Managed by Ansible - EX294 lab' /etc/motd
+# T08 Custom role apache (25)
+T08	4	control	role apache has tasks, handlers and a template	test -f roles/apache/tasks/main.yml && test -f roles/apache/handlers/main.yml && ls roles/apache/templates/*.j2 >/dev/null 2>&1
+T08	2	control	tasks notify a handler	grep -rq 'notify' roles/apache/tasks/
+T08	2	control	apache.yml applies the role	grep -q 'apache' apache.yml
+T08	3	managed-node2	httpd enabled and running	systemctl is-enabled -q httpd && systemctl is-active -q httpd
+T08	3	managed-node2	firewalld allows http (runtime and permanent)	systemctl is-active -q firewalld && firewall-cmd -q --query-service=http && firewall-cmd -q --permanent --query-service=http
+T08	3	managed-node2	ServerName configured	grep -qx 'ServerName managed-node2.lab.example.com' /etc/httpd/conf.d/servername.conf
+T08	8	control	index page shows FQDN and IP	test "$(curl -fsS --max-time 10 http://managed-node2/)" = 'Welcome to managed-node2.lab.example.com on 10.10.10.12'
+# T09 Logical volume with error handling (20)
+T09	2	control	lv.yml exists	test -f lv.yml
+T09	6	managed-node1	research/data created with the fallback size 800 MiB	test "$(lvs --noheadings --units m --nosuffix -o lv_size research/data | tr -d ' ')" = 800.00
+T09	6	managed-node1	research/data formatted ext4	test "$(blkid -s TYPE -o value /dev/research/data)" = ext4
+T09	3	managed-node1	research/data is not mounted	! findmnt -S /dev/research/data >/dev/null
+T09	3	control	lv.yml prints both required messages	grep -q 'Could not create logical volume of that size' lv.yml && grep -q 'Volume group does not exist' lv.yml
+# T10 Hosts file from a template (15)
+T10	2	control	hosts.j2 and hosts.yml exist	test -f hosts.j2 && test -f hosts.yml
+T10	5	managed-node1	/etc/myhosts has managed-node1	grep -Eq '^10\.10\.10\.11[[:space:]]+managed-node1\.lab\.example\.com[[:space:]]+managed-node1[[:space:]]*$' /etc/myhosts
+T10	5	managed-node1	/etc/myhosts has managed-node2	grep -Eq '^10\.10\.10\.12[[:space:]]+managed-node2\.lab\.example\.com[[:space:]]+managed-node2[[:space:]]*$' /etc/myhosts
+T10	3	managed-node2	/etc/myhosts exists only on dev	! test -e /etc/myhosts
+# T11 File content per group (10)
+T11	2	control	issue.yml exists	test -f issue.yml
+T11	4	managed-node1	/etc/issue is Development	test "$(cat /etc/issue)" = Development
+T11	4	managed-node2	/etc/issue is Production	test "$(cat /etc/issue)" = Production
+# T12 Web content directory (20)
+T12	4	managed-node1	/webdev owned by group webdev, mode 2775	getent group webdev >/dev/null && test "$(stat -c '%G %a' /webdev)" = 'webdev 2775'
+T12	3	managed-node1	/webdev/index.html contains Development	test "$(cat /webdev/index.html)" = Development
+T12	3	managed-node1	/var/www/html/webdev links to /webdev	test "$(readlink /var/www/html/webdev)" = /webdev
+T12	3	managed-node1	persistent SELinux fcontext httpd_sys_content_t for /webdev	grep -E '^/webdev(\(/\.\*\)\?)?[[:space:]]' /etc/selinux/targeted/contexts/files/file_contexts.local | grep -q httpd_sys_content_t
+T12	2	managed-node1	httpd enabled and running	systemctl is-enabled -q httpd && systemctl is-active -q httpd
+T12	5	control	http://managed-node1/webdev/ shows Development	test "$(curl -fsS --max-time 10 http://managed-node1/webdev/)" = Development
+# T13 Hardware report (20)
+T13	2	managed-node1	/root/hwreport.txt exists	test -f /root/hwreport.txt
+T13	2	managed-node1	HOST line	grep -qx 'HOST=managed-node1' /root/hwreport.txt
+T13	2	managed-node1	MEMORY line in MiB	m=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo); grep -qx "MEMORY=$m" /root/hwreport.txt
+T13	2	managed-node1	BIOS line filled in	grep -Eq '^BIOS=.+' /root/hwreport.txt && ! grep -q '^BIOS=bios version' /root/hwreport.txt
+T13	2	managed-node1	missing disks reported as NONE	grep -qx 'DISK_SIZE_VDA=NONE' /root/hwreport.txt && grep -qx 'DISK_SIZE_VDB=NONE' /root/hwreport.txt
+T13	2	managed-node2	/root/hwreport.txt exists	test -f /root/hwreport.txt
+T13	2	managed-node2	HOST line	grep -qx 'HOST=managed-node2' /root/hwreport.txt
+T13	2	managed-node2	MEMORY line in MiB	m=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo); grep -qx "MEMORY=$m" /root/hwreport.txt
+T13	2	managed-node2	BIOS line filled in	grep -Eq '^BIOS=.+' /root/hwreport.txt && ! grep -q '^BIOS=bios version' /root/hwreport.txt
+T13	2	managed-node2	missing disks reported as NONE	grep -qx 'DISK_SIZE_VDA=NONE' /root/hwreport.txt && grep -qx 'DISK_SIZE_VDB=NONE' /root/hwreport.txt
+# T14 Ansible Vault (20)
+T14	4	control	secret.txt holds the vault password	test "$(cat secret.txt)" = whenyouwishuponastar
+T14	4	control	locker.yml is vault-encrypted	head -n1 locker.yml | grep -q '^\$ANSIBLE_VAULT;'
+T14	6	control	locker.yml defines pw_developer	ansible-vault view --vault-password-file secret.txt locker.yml | grep -Eq '^pw_developer: *["'\'']?Imadev["'\'']?$'
+T14	6	control	locker.yml defines pw_manager	ansible-vault view --vault-password-file secret.txt locker.yml | grep -Eq '^pw_manager: *["'\'']?Imamgr["'\'']?$'
+# T15 Users from a list (25)
+T15	1	control	users.yml uses locker.yml	grep -q 'locker.yml' users.yml
+T15	4	managed-node1	developers bob(3000) and alice(3003) in devops	id -nG bob | grep -qw devops && id -nG alice | grep -qw devops && test "$(id -u bob)" = 3000 && test "$(id -u alice)" = 3003
+T15	3	managed-node1	no managers on dev	! id sally >/dev/null 2>&1 && ! id fred >/dev/null 2>&1
+T15	4	managed-node1	bob's password is pw_developer (SHA-512)	python3 -c 'import crypt,spwd,sys; h=spwd.getspnam(sys.argv[1]).sp_pwdp; sys.exit(0 if h.startswith("$6$") and crypt.crypt(sys.argv[2], h) == h else 1)' bob Imadev
+T15	1	managed-node1	password max age 30 days	test "$(chage -l bob | awk -F': ' '/^Maximum/ {print $2}')" = 30
+T15	4	managed-node2	managers sally(3001) and fred(3002) in opsmgr	id -nG sally | grep -qw opsmgr && id -nG fred | grep -qw opsmgr && test "$(id -u sally)" = 3001 && test "$(id -u fred)" = 3002
+T15	3	managed-node2	no developers on prod	! id bob >/dev/null 2>&1 && ! id alice >/dev/null 2>&1
+T15	4	managed-node2	sally's password is pw_manager (SHA-512)	python3 -c 'import crypt,spwd,sys; h=spwd.getspnam(sys.argv[1]).sp_pwdp; sys.exit(0 if h.startswith("$6$") and crypt.crypt(sys.argv[2], h) == h else 1)' sally Imamgr
+T15	1	managed-node2	password max age 30 days	test "$(chage -l sally | awk -F': ' '/^Maximum/ {print $2}')" = 30
+# T16 Rekey (10)
+T16	7	control	salaries.yml opens with the new password	p=$(mktemp); echo bbs2you9527 >$p; ansible-vault view --vault-password-file $p salaries.yml | grep -q 'bob: 72000'; rc=$?; rm -f $p; exit $rc
+T16	3	control	old password no longer works	test -f salaries.yml && { p=$(mktemp); echo insecure8sure >$p; ansible-vault view --vault-password-file $p salaries.yml >/dev/null 2>&1; rc=$?; rm -f $p; test $rc -ne 0; }
+# T17 Cron (15)
+T17	1	control	cron.yml exists	test -f cron.yml
+T17	7	managed-node1	natasha runs logger every 2 minutes	crontab -l -u natasha 2>/dev/null | grep -Eq '^\*/2 \* \* \* \* logger "EX294 in progress"$'
+T17	7	managed-node2	natasha runs logger every 2 minutes	crontab -l -u natasha 2>/dev/null | grep -Eq '^\*/2 \* \* \* \* logger "EX294 in progress"$'
+# T18 Registered variables, delegation, tags, error handling (10)
+T18	2	control	report.yml uses tags and delegation	grep -q 'tags' report.yml && grep -q 'delegate_to' report.yml
+T18	4	control	httpd_status.txt has one line per managed node	grep -Eqx 'managed-node1: (active|inactive|failed|unknown)' httpd_status.txt && grep -Eqx 'managed-node2: (active|inactive|failed|unknown)' httpd_status.txt
+T18	2	managed-node1	rescue section ran	grep -qx rescued /root/rescue.txt
+T18	2	managed-node2	rescue section ran	grep -qx rescued /root/rescue.txt

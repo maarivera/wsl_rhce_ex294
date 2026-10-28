@@ -1,0 +1,92 @@
+---
+# run-checks.yml - run a TSV check suite with Ansible (the bash twin is run-checks.sh).
+#
+#   cd /opt/rhcelab
+#   ANSIBLE_CONFIG=lab/ansible.cfg ansible-playbook validate/run-checks.yml -e suite=exam
+#   ANSIBLE_CONFIG=lab/ansible.cfg ansible-playbook validate/run-checks.yml -e suite=practice -e filter=R
+#   ANSIBLE_CONFIG=lab/ansible.cfg ansible-playbook validate/run-checks.yml -e suite=lab
+#
+# Each TSV row: ID, POINTS, TARGET, DESCRIPTION, COMMAND (exit 0 = pass).
+# Rows targeting "control" run locally as ansible inside the workspace; the other rows
+# are delegated to the managed node and run as root.
+- name: RHCE lab grader
+  hosts: localhost
+  gather_facts: false
+  vars:
+    suite: exam
+    filter: all
+    workspace: /home/ansible/ansible
+    pass_threshold: 210
+    checks_file: "{{ playbook_dir }}/{{ suite }}-checks.tsv"
+    tab: "\t"
+    filters: "{{ filter | string | split(',') }}"
+    all_checks: >-
+      {{ lookup('ansible.builtin.file', checks_file).splitlines()
+         | reject('match', '^\s*(#|$)')
+         | map('split', tab)
+         | list }}
+    selected: >-
+      {{ all_checks if filter == 'all'
+         else all_checks | selectattr('0', 'match', '^(' ~ (filters | map('regex_escape') | join('|')) ~ ')') | list }}
+
+  tasks:
+    - name: Run checks
+      ansible.builtin.shell:
+        cmd: |
+          {% if item[2] == 'control' %}
+          unset ANSIBLE_CONFIG
+          cd {{ workspace | quote }} 2>/dev/null || cd ~
+          {% endif %}
+          {{ item[4] }}
+        executable: /bin/bash
+      delegate_to: "{{ 'localhost' if item[2] == 'control' else item[2] }}"
+      become: "{{ item[2] != 'control' }}"
+      loop: "{{ selected }}"
+      loop_control:
+        label: "{{ item[0] }} {{ item[2] }}: {{ item[3] }}"
+      register: check_run
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+
+    - name: Build the results table
+      ansible.builtin.set_fact:
+        results: >-
+          {{ results | default([]) + [{
+               'id': r.item[0], 'points': r.item[1] | int, 'target': r.item[2],
+               'desc': r.item[3], 'pass': (r.rc | default(1)) == 0 }] }}
+      loop: "{{ check_run.results }}"
+      loop_control:
+        loop_var: r
+        label: "{{ r.item[0] }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: |-
+          {% for r in results %}
+          {{ 'PASS' if r.pass else 'FAIL' }}  {{ '%-5s' | format(r.id) }} {{ '%-14s' | format(r.target) }} {{ r.desc }}
+          {% endfor %}
+          {% if suite == 'exam' %}
+
+          Score by task:
+          {% for id in results | map(attribute='id') | unique %}
+          {% set rows = results | selectattr('id', 'equalto', id) | list %}
+            {{ '%-5s' | format(id) }} {{ '%3d' | format(rows | selectattr('pass') | map(attribute='points') | sum) }} / {{ '%3d' | format(rows | map(attribute='points') | sum) }}
+          {% endfor %}
+
+          TOTAL: {{ score }} / {{ max_score }}  {{ 'PASS' if score | int >= pass_threshold | int else 'FAIL' }} (need {{ pass_threshold }})
+          {% else %}
+
+          {{ results | selectattr('pass') | list | length }} passed, {{ results | rejectattr('pass') | list | length }} failed
+          {% endif %}
+      vars:
+        score: "{{ results | selectattr('pass') | map(attribute='points') | sum }}"
+        max_score: "{{ results | map(attribute='points') | sum }}"
+
+    - name: Fail the run when checks failed
+      ansible.builtin.assert:
+        that: >-
+          (results | selectattr('pass') | map(attribute='points') | sum) >= pass_threshold | int
+          if suite == 'exam' else (results | rejectattr('pass') | list | length) == 0
+        fail_msg: "Not all checks passed"
+        success_msg: "All required checks passed"

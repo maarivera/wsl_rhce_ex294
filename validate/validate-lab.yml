@@ -1,0 +1,75 @@
+---
+# validate-lab.yml - verify the lab environment with Ansible facts and asserts.
+#   cd /opt/rhcelab && ANSIBLE_CONFIG=lab/ansible.cfg ansible-playbook validate/validate-lab.yml
+- name: Verify managed nodes
+  hosts: managed
+  become: true
+  gather_facts: true
+  vars:
+    expected_ip:
+      managed-node1: 10.10.10.11
+      managed-node2: 10.10.10.12
+  tasks:
+    - name: Identity, OS and network come from the node's own namespace
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['hostname'] == inventory_hostname
+          - ansible_facts['fqdn'] == inventory_hostname ~ '.lab.example.com'
+          - ansible_facts['distribution'] == 'Rocky'
+          - ansible_facts['distribution_major_version'] == '9'
+          - ansible_facts['default_ipv4']['address'] == expected_ip[inventory_hostname]
+          - ansible_facts['default_ipv4']['interface'] == 'eth0'
+        fail_msg: "Facts do not match the lab design - is rhcelab-net running?"
+
+    - name: Lab disk custom fact is present
+      ansible.builtin.assert:
+        that:
+          - ansible_local['rhcelab']['disk'] is match('/dev/loop')
+          - ansible_local['rhcelab']['ip'] == expected_ip[inventory_hostname]
+
+    - name: Collect service state
+      ansible.builtin.service_facts:
+
+    - name: Core services run
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services[item].state == 'running'
+        quiet: true
+      loop: [sshd.service, firewalld.service, crond.service, rhcelab-net.service]
+
+    - name: sshd accepts keys only
+      ansible.builtin.command: sshd -T
+      register: sshd_effective
+      changed_when: false
+
+    - name: Password and root logins are disabled
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in sshd_effective.stdout_lines"
+          - "'permitrootlogin no' in sshd_effective.stdout_lines"
+
+    - name: Package mirrors reachable through the lab NAT
+      ansible.builtin.uri:
+        url: https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml
+        method: HEAD
+        timeout: 20
+
+    - name: Other node reachable over the lab bridge
+      ansible.builtin.wait_for:
+        host: "{{ (groups['managed'] | difference([inventory_hostname])) | first }}"
+        port: 22
+        timeout: 5
+
+- name: Verify control node
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Ansible version
+      ansible.builtin.assert:
+        that: ansible_version.full is version('2.15', '>=')
+        fail_msg: "ansible-core {{ ansible_version.full }} is older than 2.15"
+
+    - name: Materials server
+      ansible.builtin.uri:
+        url: http://materials.lab.example.com/materials/
+        return_content: false

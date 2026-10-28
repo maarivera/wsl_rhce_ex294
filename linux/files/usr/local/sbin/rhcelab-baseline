@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# rhcelab-baseline - record (capture) the clean state of a managed node, so that
+# rhcelab-reset can later return the node to exactly that state.
+#
+# Usage: rhcelab-baseline capture|show
+set -euo pipefail
+
+BASE=/var/lib/rhcelab/baseline
+
+# Configuration that exam tasks commonly change. Paths are relative to /.
+TRACKED_PATHS=(
+    etc/hosts etc/motd etc/issue etc/issue.net etc/fstab etc/environment
+    etc/crontab etc/cron.d etc/cron.allow etc/cron.deny var/spool/cron
+    etc/yum.repos.d etc/dnf/dnf.conf
+    etc/firewalld
+    etc/selinux/config
+    etc/sudoers etc/sudoers.d
+    etc/sysctl.conf etc/sysctl.d
+    etc/profile.d etc/security/limits.conf etc/security/limits.d
+    etc/systemd/system
+    etc/ssh/sshd_config etc/ssh/sshd_config.d
+    etc/chrony.conf etc/sysconfig/chronyd
+    etc/lvm/lvm.conf etc/lvm/lvmlocal.conf
+    etc/login.defs etc/default/useradd
+    home/ansible/.ssh
+)
+
+installed_packages() { rpm -qa --qf '%{NAME}\n' | grep -vx gpg-pubkey | sort -u; }
+installed_groups() { dnf -q group list --installed --ids 2>/dev/null | sed -n 's/.*(\([^)]*\))[[:space:]]*$/\1/p' | sort -u; }
+enabled_units() { systemctl list-unit-files --state=enabled --no-legend --type=service,socket,timer 2>/dev/null | awk '{print $1}' | sort -u; }
+all_users() { getent passwd | cut -d: -f1 | sort -u; }
+all_groups() { getent group | cut -d: -f1 | sort -u; }
+
+cmd_capture() {
+    local p present=() absent=()
+    mkdir -p "$BASE"
+    for p in "${TRACKED_PATHS[@]}"; do
+        if [[ -e /$p || -L /$p ]]; then present+=("$p"); else absent+=("$p"); fi
+    done
+    tar -C / --xattrs --acls -cpf "$BASE/files.tar" "${present[@]}"
+    printf '%s\n' "${present[@]}" >"$BASE/present-paths.txt"
+    printf '%s\n' "${absent[@]}" >"$BASE/absent-paths.txt"
+    installed_packages >"$BASE/packages.txt"
+    installed_groups >"$BASE/groups-dnf.txt"
+    enabled_units >"$BASE/units.txt"
+    all_users >"$BASE/users.txt"
+    all_groups >"$BASE/groups.txt"
+    getent passwd | awk -F: '{print $6}' | sort -u >"$BASE/homes.txt"
+    # Mark the baseline as user-installed so `dnf autoremove` never removes it.
+    xargs -a "$BASE/packages.txt" dnf -q mark install >/dev/null 2>&1 || true
+    date -Is >"$BASE/captured-at"
+    echo "rhcelab-baseline: captured $(wc -l <"$BASE/packages.txt") packages, $(wc -l <"$BASE/present-paths.txt") paths"
+}
+
+cmd_show() {
+    [[ -f $BASE/captured-at ]] || { echo "no baseline captured" >&2; exit 1; }
+    echo "captured: $(cat "$BASE/captured-at")"
+    echo "packages: $(wc -l <"$BASE/packages.txt")  units: $(wc -l <"$BASE/units.txt")  users: $(wc -l <"$BASE/users.txt")"
+}
+
+case ${1:-} in
+    capture) cmd_capture ;;
+    show) cmd_show ;;
+    *) echo "usage: $0 capture|show" >&2; exit 2 ;;
+esac

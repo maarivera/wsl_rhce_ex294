@@ -1,0 +1,47 @@
+---
+# ansible-playbook users.yml --vault-password-file secret.txt
+- name: Developers on dev
+  hosts: dev
+  vars_files:
+    - locker.yml
+    - user_list.yml
+  tasks:
+    - name: Group devops
+      ansible.builtin.group:
+        name: devops
+
+    - name: Developer accounts
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        groups: devops
+        append: true
+        password: "{{ pw_developer | password_hash('sha512') }}"
+        password_expire_max: 30
+        update_password: on_create
+      loop: "{{ users | selectattr('job', 'equalto', 'developer') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+- name: Managers on prod
+  hosts: prod
+  vars_files:
+    - locker.yml
+    - user_list.yml
+  tasks:
+    - name: Group opsmgr
+      ansible.builtin.group:
+        name: opsmgr
+
+    - name: Manager accounts
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        groups: opsmgr
+        append: true
+        password: "{{ pw_manager | password_hash('sha512') }}"
+        password_expire_max: 30
+        update_password: on_create
+      loop: "{{ users | selectattr('job', 'equalto', 'manager') | list }}"
+      loop_control:
+        label: "{{ item.name }}"

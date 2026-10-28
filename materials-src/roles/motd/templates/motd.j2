@@ -1,0 +1,3 @@
+{{ motd_message }}
+
+Host: {{ ansible_facts['fqdn'] }} ({{ ansible_facts['default_ipv4']['address'] | default('no IPv4') }})

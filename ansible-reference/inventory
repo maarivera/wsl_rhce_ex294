@@ -1,0 +1,16 @@
+# Reference inventory for the practice tasks (B01).
+[dev]
+managed-node1
+
+[prod]
+managed-node2
+
+[webservers]
+managed-node1
+
+[dbservers]
+managed-node2
+
+[managed:children]
+dev
+prod

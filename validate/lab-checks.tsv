@@ -1,0 +1,38 @@
+# Lab environment health checks
+# Columns (TAB-separated): ID  POINTS  TARGET  DESCRIPTION  COMMAND
+# TARGET 'control' runs as ansible in /home/ansible/ansible; managed-nodeN runs as root over SSH.
+# A check passes when COMMAND exits 0. Never use Jinja delimiters in COMMAND (the Ansible engine templates it).
+L01	1	control	ansible-core 2.15 or newer on PATH	ansible --version | head -n1 | grep -Eq 'core 2\.(1[5-9]|[2-9][0-9])'
+L02	1	control	lab names resolve without DNS	getent hosts control-node managed-node1 managed-node2 materials.lab.example.com >/dev/null
+L03	1	control	automation user has an SSH key pair	test -f ~/.ssh/id_ed25519 -a -f ~/.ssh/id_ed25519.pub
+L04	1	control	key-based SSH to managed-node1	ssh -n -o BatchMode=yes -o ConnectTimeout=5 managed-node1 true
+L05	1	control	key-based SSH to managed-node2	ssh -n -o BatchMode=yes -o ConnectTimeout=5 managed-node2 true
+L06	1	control	Ansible reaches all managed nodes (lab inventory)	ANSIBLE_CONFIG=/opt/rhcelab/lab/ansible.cfg ansible managed -m ansible.builtin.ping -o
+L07	1	control	materials server answers	curl -fsS -o /dev/null http://materials.lab.example.com/materials/hwreport.empty
+L08	1	control	collection tarballs published	curl -fsSI -o /dev/null http://materials.lab.example.com/materials/collections/ansible-posix.tar.gz
+L09	1	control	RHEL system roles installed	test -d /usr/share/ansible/collections/ansible_collections/redhat/rhel_system_roles
+L10	1	control	firewalld is NOT running on the control node (shared namespace)	! systemctl is-active -q firewalld
+L11	1	managed-node1	hostname is set	test "$(hostname)" = managed-node1
+L12	1	managed-node1	own IP on eth0 inside the node namespace	ip -4 -o addr show eth0 | grep -q 'inet 10.10.10.11/24'
+L13	1	managed-node1	node namespace is isolated from the shared bridge	! ip link show rhcebr0 >/dev/null 2>&1
+L14	1	managed-node1	password authentication disabled in sshd	sshd -T | grep -qx 'passwordauthentication no'
+L15	1	managed-node1	ansible has passwordless sudo	sudo -l -U ansible | grep -q 'NOPASSWD: ALL'
+L16	1	managed-node1	firewalld running and allows ssh	systemctl is-active -q firewalld && firewall-cmd -q --query-service=ssh
+L17	1	managed-node1	reaches the other node	ping -c1 -W2 managed-node2 >/dev/null
+L18	1	managed-node1	reaches the materials server	curl -fsS -o /dev/null http://materials.lab.example.com/materials/hosts.j2
+L19	1	managed-node1	Internet and DNS work (package mirrors)	curl -fsS -o /dev/null --max-time 20 https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml
+L20	1	managed-node1	lab disk fact present	python3 -c 'import json,sys; d=json.load(open("/etc/ansible/facts.d/rhcelab.fact")); sys.exit(0 if d["disk"].startswith("/dev/loop") else 1)'
+L21	1	managed-node1	baseline captured for resets	test -s /var/lib/rhcelab/baseline/packages.txt
+L11	1	managed-node2	hostname is set	test "$(hostname)" = managed-node2
+L12	1	managed-node2	own IP on eth0 inside the node namespace	ip -4 -o addr show eth0 | grep -q 'inet 10.10.10.12/24'
+L13	1	managed-node2	node namespace is isolated from the shared bridge	! ip link show rhcebr0 >/dev/null 2>&1
+L14	1	managed-node2	password authentication disabled in sshd	sshd -T | grep -qx 'passwordauthentication no'
+L15	1	managed-node2	ansible has passwordless sudo	sudo -l -U ansible | grep -q 'NOPASSWD: ALL'
+L16	1	managed-node2	firewalld running and allows ssh	systemctl is-active -q firewalld && firewall-cmd -q --query-service=ssh
+L17	1	managed-node2	reaches the other node	ping -c1 -W2 managed-node1 >/dev/null
+L18	1	managed-node2	reaches the materials server	curl -fsS -o /dev/null http://materials.lab.example.com/materials/hosts.j2
+L19	1	managed-node2	Internet and DNS work (package mirrors)	curl -fsS -o /dev/null --max-time 20 https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml
+L20	1	managed-node2	lab disk fact present	python3 -c 'import json,sys; d=json.load(open("/etc/ansible/facts.d/rhcelab.fact")); sys.exit(0 if d["disk"].startswith("/dev/loop") else 1)'
+L21	1	managed-node2	baseline captured for resets	test -s /var/lib/rhcelab/baseline/packages.txt
+L22	1	managed-node1	seeded volume group research exists	vgs research >/dev/null
+L23	1	managed-node2	LVM isolation: research VG is invisible on managed-node2	! vgs research >/dev/null 2>&1

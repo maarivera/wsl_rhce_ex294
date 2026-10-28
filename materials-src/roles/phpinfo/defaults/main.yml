@@ -1,0 +1,6 @@
+---
+phpinfo_packages:
+  - httpd
+  - php
+  - php-fpm
+  - firewalld

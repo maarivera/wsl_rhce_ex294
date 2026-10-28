@@ -1,0 +1,22 @@
+---
+- name: Hardware report
+  hosts: all
+  tasks:
+    - name: Download the empty report
+      ansible.builtin.get_url:
+        url: http://materials.lab.example.com/materials/hwreport.empty
+        dest: /root/hwreport.txt
+        mode: "0644"
+        force: true
+
+    - name: Fill in the report
+      ansible.builtin.lineinfile:
+        path: /root/hwreport.txt
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: HOST, value: "{{ inventory_hostname }}" }
+        - { key: MEMORY, value: "{{ ansible_facts['memtotal_mb'] }}" }
+        - { key: BIOS, value: "{{ ansible_facts['bios_version'] | default('NONE', true) }}" }
+        - { key: DISK_SIZE_VDA, value: "{{ ansible_facts['devices']['vda']['size'] | default('NONE') }}" }
+        - { key: DISK_SIZE_VDB, value: "{{ ansible_facts['devices']['vdb']['size'] | default('NONE') }}" }

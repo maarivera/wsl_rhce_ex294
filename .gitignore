@@ -1,0 +1,7 @@
+*.retry
+*.vhdx
+*.wsl
+*.tar
+*.tar.gz
+!materials/**/*.tar.gz
+.vault_pass*

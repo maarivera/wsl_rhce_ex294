@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# rhcelab-net - network plumbing for the WSL2 RHCE lab.
+#
+# Every WSL2 distribution runs on ONE shared kernel and, by default, in ONE shared
+# network namespace: same IP address, same port space, same netfilter tables.
+# Three "nodes" in that shared namespace cannot each run sshd on port 22 or have
+# an independent firewall. This script fixes that:
+#
+#   * It creates a Linux bridge (rhcebr0, 10.10.10.1/24) in the shared namespace.
+#     This is the lab's private virtual switch.
+#   * It NATs the lab subnet out of the WSL VM so nodes can reach package mirrors.
+#   * On a managed node it creates a private network namespace ("rhcelab") whose
+#     eth0 is a veth pair plugged into the bridge. systemd drop-ins
+#     (NetworkNamespacePath=/run/netns/rhcelab) start sshd, firewalld, httpd, ...
+#     inside it, so each managed node has its own IP, ports and nftables ruleset.
+#   * On the control node it adds 10.10.10.10 to the bridge. The control node stays
+#     in the shared namespace so your interactive shell can reach every node.
+#
+# Usage: rhcelab-net up|down|status
+set -euo pipefail
+
+CONF=/etc/rhcelab/lab.conf
+if [[ ! -r $CONF ]]; then
+    echo "rhcelab-net: $CONF not found - run node-init.sh first" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$CONF"
+
+: "${LAB_BRIDGE:=rhcebr0}"
+: "${LAB_NETNS:=rhcelab}"
+: "${LAB_GW:=10.10.10.1}"
+: "${LAB_PREFIX:=24}"
+: "${LAB_SUBNET:=10.10.10.0/24}"
+
+log() { echo "rhcelab-net: $*"; }
+
+# Deterministic MAC from the IP so ARP caches stay valid across node restarts.
+mac_for() {
+    local a b c d
+    IFS=. read -r a b c d <<<"$1"
+    printf '52:54:00:%02x:%02x:%02x' "$b" "$c" "$d"
+}
+
+ensure_bridge() {
+    if ! ip link show "$LAB_BRIDGE" &>/dev/null; then
+        # Another lab node may be creating it at the same moment; tolerate the race.
+        ip link add "$LAB_BRIDGE" type bridge 2>/dev/null || ip link show "$LAB_BRIDGE" >/dev/null
+    fi
+    ip addr replace "$LAB_GW/$LAB_PREFIX" dev "$LAB_BRIDGE"
+    ip link set "$LAB_BRIDGE" up
+}
+
+ensure_nat() {
+    sysctl -qw net.ipv4.ip_forward=1
+    # "table + delete + table" makes the load idempotent and atomic.
+    nft -f - <<EOF
+table ip rhcelab
+delete table ip rhcelab
+table ip rhcelab {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr $LAB_SUBNET ip daddr != $LAB_SUBNET masquerade
+    }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        iifname "$LAB_BRIDGE" accept
+        oifname "$LAB_BRIDGE" ct state established,related accept
+    }
+}
+EOF
+    # Docker sets the iptables FORWARD policy to DROP, which also drops lab traffic.
+    # DOCKER-USER is the chain Docker reserves for exactly this kind of exception.
+    if command -v iptables >/dev/null && iptables -w -n -L DOCKER-USER &>/dev/null; then
+        local dir
+        for dir in -i -o; do
+            iptables -w -C DOCKER-USER "$dir" "$LAB_BRIDGE" -j ACCEPT -m comment --comment rhcelab 2>/dev/null ||
+                iptables -w -I DOCKER-USER "$dir" "$LAB_BRIDGE" -j ACCEPT -m comment --comment rhcelab
+        done
+    fi
+}
+
+up_managed() {
+    local ns=$LAB_NETNS
+    [[ -e /run/netns/$ns ]] || ip netns add "$ns"
+    if ! ip -n "$ns" link show eth0 &>/dev/null; then
+        # A stale host-side veth can survive if the old namespace was not torn down.
+        ip link del "$LAB_VETH" &>/dev/null || true
+        ip link add "$LAB_VETH" type veth peer name eth0 netns "$ns"
+        ip -n "$ns" link set eth0 address "$(mac_for "$LAB_IP")"
+    fi
+    ip link set "$LAB_VETH" master "$LAB_BRIDGE" up
+    ip -n "$ns" link set lo up
+    ip -n "$ns" link set eth0 up
+    ip -n "$ns" addr replace "$LAB_IP/$LAB_PREFIX" dev eth0
+    ip -n "$ns" route replace default via "$LAB_GW"
+    log "$LAB_NODE is $LAB_IP in network namespace '$ns' (veth $LAB_VETH on $LAB_BRIDGE)"
+}
+
+up_control() {
+    ip addr replace "$LAB_IP/$LAB_PREFIX" dev "$LAB_BRIDGE"
+    # Prefer the control node's own address as source when talking to the lab.
+    ip route replace "$LAB_SUBNET" dev "$LAB_BRIDGE" proto kernel scope link src "$LAB_IP"
+    log "$LAB_NODE is $LAB_IP on $LAB_BRIDGE (shared WSL namespace)"
+}
+
+cmd_up() {
+    ensure_bridge
+    ensure_nat
+    case $LAB_ROLE in
+        managed) up_managed ;;
+        control) up_control ;;
+        *) echo "rhcelab-net: unknown LAB_ROLE '$LAB_ROLE'" >&2; exit 1 ;;
+    esac
+}
+
+cmd_down() {
+    if [[ $LAB_ROLE == managed ]]; then
+        ip netns del "$LAB_NETNS" 2>/dev/null || true
+        ip link del "$LAB_VETH" 2>/dev/null || true
+    else
+        ip addr del "$LAB_IP/$LAB_PREFIX" dev "$LAB_BRIDGE" 2>/dev/null || true
+    fi
+}
+
+cmd_status() {
+    echo "== shared namespace"
+    ip -br addr show "$LAB_BRIDGE" 2>/dev/null || echo "$LAB_BRIDGE missing"
+    if [[ $LAB_ROLE == managed ]]; then
+        echo "== namespace $LAB_NETNS ($LAB_NODE)"
+        ip -n "$LAB_NETNS" -br addr 2>/dev/null || echo "namespace $LAB_NETNS missing"
+        ip -n "$LAB_NETNS" route 2>/dev/null || true
+    fi
+}
+
+case ${1:-} in
+    up) cmd_up ;;
+    down) cmd_down ;;
+    status) cmd_status ;;
+    *) echo "usage: $0 up|down|status" >&2; exit 2 ;;
+esac

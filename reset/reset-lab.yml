@@ -1,0 +1,114 @@
+---
+# Reset the managed nodes to the baseline captured when the lab was built.
+#
+# The work is done by /usr/local/sbin/rhcelab-reset on each node, so the same reset
+# also works out-of-band (wsl -d managed-node1 -u root -- rhcelab-reset all) when
+# Ansible can no longer reach a node.
+#
+#   ansible-playbook reset/reset-lab.yml                        # full reset
+#   ansible-playbook reset/reset-lab.yml --tags users,firewall  # selected parts
+#   ansible-playbook reset/reset-lab.yml -e exam_mode=true      # full reset, then remove repos
+#   ansible-playbook reset/reset-lab.yml -l managed-node2       # one node
+#
+# Tags: repos, services, storage, packages, users, cron, files, firewall, selinux, verify
+- name: Reset managed nodes to the lab baseline
+  hosts: managed
+  become: true
+  gather_facts: false
+  vars:
+    exam_mode: false
+
+  tasks:
+    - name: Rebuild repositories
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset repos
+      changed_when: true
+      tags: [repos, packages]
+
+    - name: Disable services that are not part of the baseline
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset services
+      changed_when: true
+      tags: [services]
+
+    - name: Rebuild lab disks (unmount, remove VGs and partitions, re-seed)
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset storage
+      changed_when: true
+      tags: [storage]
+
+    - name: Rebuild packages (remove extras, reinstall missing baseline packages)
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset packages
+      changed_when: true
+      tags: [packages]
+
+    - name: Rebuild users and groups
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset users
+      changed_when: true
+      tags: [users]
+
+    - name: Remove scheduled jobs
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset cron
+      changed_when: true
+      tags: [cron]
+
+    - name: Restore configuration files and remove exam artifacts
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset files
+      changed_when: true
+      tags: [files]
+
+    - name: Rebuild firewalld configuration
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset firewall
+      changed_when: true
+      tags: [firewall]
+
+    - name: Restore SELinux configuration
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset selinux
+      changed_when: true
+      tags: [selinux]
+
+    - name: Rebuild services (re-enable baseline units)
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset services
+      changed_when: true
+      tags: [services, packages, firewall, files]
+
+    - name: Exam mode - remove repository files
+      ansible.builtin.command: /usr/local/sbin/rhcelab-reset --exam
+      changed_when: true
+      when: exam_mode | bool
+      tags: [repos, exam]
+
+- name: Verify the reset
+  hosts: managed
+  become: true
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Reconnect (sshd may have been reloaded)
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: Collect service state
+      ansible.builtin.service_facts:
+
+    - name: Core services are running
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['sshd.service'].state == 'running'
+          - ansible_facts.services['firewalld.service'].state == 'running'
+          - ansible_facts.services['crond.service'].state == 'running'
+        quiet: true
+
+    - name: Repositories are usable
+      ansible.builtin.command: dnf -q repolist --enabled
+      register: repolist
+      changed_when: false
+      failed_when: repolist.stdout_lines | length == 0
+      when: not (exam_mode | default(false) | bool)
+
+    - name: Lab disk fact is present
+      ansible.builtin.setup:
+        filter: ansible_local
+
+    - name: Show node summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} reset OK - spare disk {{ ansible_local.rhcelab.disk | default('n/a') }},
+          repos {{ 'removed (exam mode)' if exam_mode | default(false) | bool else 'restored' }}

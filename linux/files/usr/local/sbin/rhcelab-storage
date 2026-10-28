@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# rhcelab-storage - loop-backed spare disks for managed nodes.
+#
+# WSL2 distributions cannot get their own block devices, and /dev is a single
+# devtmpfs shared by every distribution. Each managed node therefore gets sparse
+# image files attached as loop devices. Two safeguards keep nodes apart:
+#   * image paths contain the node name, so `losetup -j` finds only this node's disks;
+#   * the LVM devices file (/etc/lvm/devices/system.devices) lists only this node's
+#     disks, so `pvs`/`vgs` never show the other node's volume groups.
+#
+# Loop numbers can change after `wsl --shutdown`. Never hard-code /dev/loopN;
+# use the custom fact written below:
+#     ansible_local.rhcelab.disk    -> first spare disk, e.g. /dev/loop3
+#     ansible_local.rhcelab.disks   -> {"disk1": "/dev/loop3", ...}
+#
+# Usage: rhcelab-storage up|status
+set -euo pipefail
+
+# shellcheck source=/dev/null
+. /etc/rhcelab/lab.conf
+
+DISK_DIR=/var/lib/rhcelab/disks
+SEED_MARK=/var/lib/rhcelab/storage.seeded
+FACT=/etc/ansible/facts.d/rhcelab.fact
+
+img_for() { echo "$DISK_DIR/${LAB_NODE}-$1.img"; }
+dev_for() { losetup --list --noheadings --output NAME --associated "$(img_for "$1")" 2>/dev/null | head -n1; }
+
+attach_disks() {
+    local spec name size img dev
+    mkdir -p "$DISK_DIR" /etc/lvm/devices
+    for spec in ${LAB_DISKS:-}; do
+        name=${spec%%:*}
+        size=${spec##*:}
+        img=$(img_for "$name")
+        [[ -f $img ]] || truncate -s "${size}M" "$img"
+        dev=$(dev_for "$name")
+        [[ -n $dev ]] || dev=$(losetup --find --partscan --show "$img")
+        if ! lvmdevices 2>/dev/null | grep -qF -e "$img" -e "DEVNAME=$dev "; then
+            lvmdevices --adddev "$dev" >/dev/null
+        fi
+    done
+    # Fix entries whose loop number changed since the last boot.
+    lvmdevices --update >/dev/null 2>&1 || true
+}
+
+seed_vg() {
+    [[ -n ${LAB_SEED_VG:-} && ! -e $SEED_MARK ]] || return 0
+    local vg=${LAB_SEED_VG%%:*} disk=${LAB_SEED_VG##*:} dev
+    dev=$(dev_for "$disk")
+    if ! vgs "$vg" &>/dev/null; then
+        wipefs -qa "$dev"
+        pvcreate -qy "$dev"
+        vgcreate -q "$vg" "$dev"
+    fi
+    touch "$SEED_MARK"
+}
+
+write_fact() {
+    local spec name first="" json=""
+    mkdir -p "$(dirname "$FACT")"
+    for spec in ${LAB_DISKS:-}; do
+        name=${spec%%:*}
+        [[ -n $first ]] || first=$(dev_for "$name")
+        json+="${json:+, }\"$name\": \"$(dev_for "$name")\""
+    done
+    cat >"$FACT" <<EOF
+{"node": "$LAB_NODE", "role": "$LAB_ROLE", "ip": "$LAB_IP", "disk": "$first", "disks": {$json}}
+EOF
+}
+
+cmd_up() {
+    if [[ $LAB_ROLE == managed ]]; then
+        attach_disks
+        seed_vg
+        vgchange -q -ay >/dev/null 2>&1 || true
+    fi
+    write_fact
+}
+
+cmd_status() {
+    local spec
+    for spec in ${LAB_DISKS:-}; do
+        printf '%-6s %-12s %s\n' "${spec%%:*}" "$(dev_for "${spec%%:*}")" "$(img_for "${spec%%:*}")"
+    done
+    lvmdevices 2>/dev/null || true
+    pvs 2>/dev/null || true
+}
+
+case ${1:-} in
+    up) cmd_up ;;
+    status) cmd_status ;;
+    *) echo "usage: $0 up|status" >&2; exit 2 ;;
+esac

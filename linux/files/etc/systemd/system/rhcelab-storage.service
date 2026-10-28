@@ -1,0 +1,17 @@
+[Unit]
+Description=RHCE lab loop-backed spare disks
+Documentation=file:///usr/local/sbin/rhcelab-storage
+ConditionPathExists=/etc/rhcelab/lab.conf
+DefaultDependencies=no
+After=systemd-udevd.service systemd-remount-fs.service
+Before=local-fs-pre.target lvm2-monitor.service shutdown.target
+Wants=local-fs-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rhcelab-storage up
+
+[Install]
+WantedBy=local-fs.target

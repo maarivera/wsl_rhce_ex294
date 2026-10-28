@@ -1,0 +1,61 @@
+---
+- name: Web content on dev
+  hosts: dev
+  tasks:
+    - name: Install httpd and firewalld
+      ansible.builtin.dnf:
+        name: [httpd, firewalld]
+        state: present
+
+    - name: Group webdev
+      ansible.builtin.group:
+        name: webdev
+
+    - name: /webdev directory
+      ansible.builtin.file:
+        path: /webdev
+        state: directory
+        group: webdev
+        mode: "2775"
+
+    # WSL2 lab: the kernel has SELinux disabled, so tell the module not to care.
+    # On a real RHEL host drop ignore_selinux_state and keep the restorecon task.
+    - name: Persistent SELinux file context
+      community.general.sefcontext:
+        target: "/webdev(/.*)?"
+        setype: httpd_sys_content_t
+        state: present
+        ignore_selinux_state: true
+        reload: false
+
+    - name: Apply the context (no-op while SELinux is disabled)
+      ansible.builtin.command: restorecon -Rv /webdev
+      register: restorecon
+      changed_when: restorecon.stdout | length > 0
+      failed_when: false
+
+    - name: Index page
+      ansible.builtin.copy:
+        content: "Development\n"
+        dest: /webdev/index.html
+        mode: "0644"
+
+    - name: Link into the document root
+      ansible.builtin.file:
+        src: /webdev
+        dest: /var/www/html/webdev
+        state: link
+
+    - name: Start and enable services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop: [httpd, firewalld]
+
+    - name: Allow HTTP
+      ansible.posix.firewalld:
+        service: http
+        permanent: true
+        immediate: true
+        state: enabled

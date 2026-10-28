@@ -1,0 +1,37 @@
+---
+- name: Service report with recovery
+  hosts: all
+  tasks:
+    - name: Query httpd
+      ansible.builtin.command: systemctl is-active httpd
+      register: httpd_state
+      changed_when: false
+      failed_when: false
+      tags: status
+
+    # throttle: 1 - two hosts writing the same local file at once would race.
+    - name: Record the state on the control node
+      ansible.builtin.lineinfile:
+        path: /home/ansible/ansible/httpd_status.txt
+        regexp: "^{{ inventory_hostname }}:"
+        line: "{{ inventory_hostname }}: {{ httpd_state.stdout | default('unknown', true) }}"
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      throttle: 1
+      tags: status
+
+    - name: Recover from a failing task
+      tags: recovery
+      block:
+        - name: Stop a service that does not exist
+          ansible.builtin.service:
+            name: rhce-nonexistent
+            state: stopped
+      rescue:
+        - name: Record the recovery
+          ansible.builtin.copy:
+            content: "rescued\n"
+            dest: /root/rescue.txt
+            mode: "0644"
